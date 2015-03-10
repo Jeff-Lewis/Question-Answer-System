@@ -1,0 +1,1 @@
+Conditional formatting in excel allows you to format cells based on a set of rules. This will draw attention to the data you want to highlight and make your spreadsheets more user friendly. Produced by Sara Silverstein. Follow BI Video: On Facebook

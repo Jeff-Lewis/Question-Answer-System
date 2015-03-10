@@ -1,0 +1,1 @@
+Here's a really easy setup for displaying data in Excel. The key is to create dynamic named ranges. Watch the video to see how to do it in a few easy steps. Produced by Sara Silverstein. Follow BI Video: On Twitter

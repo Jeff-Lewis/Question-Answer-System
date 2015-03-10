@@ -1,0 +1,1 @@
+While Microsoft Excel is an impeccable program, sometimes you're forced to scrounge for data from less organized places. Here, we look at one such example where the data that we import is all stuck in the same cell. Produced by Daniel Goodman and Walter Hickey. Originally published in July 2013. Follow BI Video: On Facebook

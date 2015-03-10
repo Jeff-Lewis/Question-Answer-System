@@ -1,0 +1,1 @@
+This chart comes from a presentation from JP Morgan Funds.  It tracks stock market volatility and correlations among stocks since the Great Depression.  As you can see, during periods of high volatility, correlations among stocks increase.  In other words, stocks move up and down together.  FREE AppDownload

@@ -1,0 +1,1 @@
+Data validation in Excel allows you to create drop-down menus right inside individual cells. You can also restrict the types of values entered into different cells. This makes spreadsheets safer to share because you can avoid errors caused by invalid data entries. Produced by Sara Silverstein. Follow BI Video: On Facebook

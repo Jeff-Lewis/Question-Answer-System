@@ -1,0 +1,1 @@
+Everyone knows Microsoft Excel is fantastic for crunching numbers, but did you also know it's outstandingly useful when it comes to presenting them clearly? When you've got a huge collection of hideous raw data, a Pivot Table is an outstanding way to make sense of it to get the information you really need to know.  Here's how to make one: Produced by Daniel Goodman

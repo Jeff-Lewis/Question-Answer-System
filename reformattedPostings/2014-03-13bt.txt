@@ -1,0 +1,1 @@
+This is one tool you must use in Excel. There is no need to download data to a text file and then import it into your spreadsheet.  With the "Text to Columns" tool you can organize your data right in Excel. Produced by Sara Silverstein. Follow BI Video: On Facebook

@@ -1,0 +1,1 @@
+We downloaded all Social Security name data since 1880 and adjusted the data to show only people still living today. We ended up with age distributions for every name in the database. Using the mode of each distribution we were able to determine the most likely age for anyone based on their name.  Produced by Sara Silverstein. Follow BI Video: On Facebook

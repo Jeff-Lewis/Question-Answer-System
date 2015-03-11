@@ -1,19 +1,31 @@
 #IEMS 395 Text Mining
 #Nick Paras
+
+#set new heap size for java
+options(java.parameters = "-Xmx4000m")
+
 library(tm)
 #library(plyr)
 library(openNLP)
 require("NLP")
 library(SnowballC)
+library(sqldf)
 #library(RWeka)
+#install.packages("openNLPmodels.en", repos = "http://datacube.wu.ac.at/", type = "source")
+#install.packages("openNLPmodels.es", repos = "http://datacube.wu.ac.at/", type = "source")
+#install.packages("openNLPmodels.nl", repos = "http://datacube.wu.ac.at/", type = "source")
 
-# function to initialize the openNLP annotation functions
-initOpenNLP <- function() {
-  #initialize openNLP fcns to do part of speech / sentence tagging
-  sent_token_annotator <- Maxent_Sent_Token_Annotator()
-  word_token_annotator <- Maxent_Word_Token_Annotator()
-  pos_tag_annotator <- Maxent_POS_Tag_Annotator()
-}
+library(openNLPmodels.en)
+library(openNLPmodels.es)
+library(openNLPmodels.nl)
+
+library(rJava)
+
+
+#initialize openNLP fcns to do part of speech / sentence tagging
+sent_token_annotator <- Maxent_Sent_Token_Annotator()
+word_token_annotator <- Maxent_Word_Token_Annotator()
+pos_tag_annotator <- Maxent_POS_Tag_Annotator()
 
 
 #Load the corpus
@@ -29,8 +41,10 @@ preProc <- function(corpusObj) {
   corpusObj <- tm_map(corpusObj, removeWords, stopwords("english"))
   corpusObj <- tm_map(corpusObj, stripWhitespace)
   corpusObj <- tm_map(corpusObj, stemDocument)
+  return(corpusObj)
 }
 
+corp = preProc(corp)
 
 #options(mc.cores=1)
 #CustomTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min = 1, max = 1))}
@@ -43,22 +57,22 @@ dtm = DocumentTermMatrix(corp)
 # function to extract type from the query
 getQueryType <- function(query) {
   if (grepl("CEO",query)) {
-    qType = "Query Type: CEO"
+    qType = "person"
   } else if (grepl("bankrupt",query)) {
-    qType = "Query Type: bankruptcy"
+    qType = "organization"
   } else if (grepl("GDP",query)) {
-    qType = "Query Type: GDP"
+    qType = "misc"
   } else if (grepl("percentage",query)) {
-    qType = "Query Type: percentage"
+    qType = "percentage"
   } else {
-    qType = "Invalid query, please try again"
+    qType = "misc"
   }
   return(qType)
 }
 
 # function to extract keywords from the queries
 getKeywords <- function(query) {
-  library(sqldf)
+  
   keyPosDict = data.frame(tags=c("NNP", "NNPS", "NN", "NNS", "JJ", "JJR", "JJS", "CD"))
   ## Need sentence and word token annotations.
   a2 <- annotate(query, list(sent_token_annotator, word_token_annotator))
@@ -93,25 +107,146 @@ getDocuments <- function(keywords, docTermMat) {
 
 # function to score and sort documents by TF-IDF on keywords
 scoreDocuments <- function(keywords, redDocTermMat) {
+  #give tfidf weightings
+  tfidfMat = weightTfIdf(redDocTermMat,normalize=TRUE)
+  #stem the keywords 
+  keywords = wordStem(keywords)
   
+  #find the tokens/columns of the DTM that contain the keywords
+  locTok = sapply(keywords, function(x) colnames(redDocTermMat)[grepl(tolower(x),colnames(redDocTermMat))])
+  locTok = as.character(c(unlist(locTok)))
+  tokCol = c(which(colnames(redDocTermMat) %in% locTok))
+  
+  #compute tfidf score for each document
+  docScore = apply(redDocTermMat[,tokCol],1,function(x) sum(x) )
+  docRank = sort(docScore,decreasing=TRUE)
+  
+  #return top ten scoring documents
+  return(docRank[1:10])
 }
 
-# function to extract a vector of sentences from a document
-getSentences <- function(text) {
-  ## Need sentence and word token annotations.
-  a2 <- annotate(text, list(sent_token_annotator))
-  for (ind in 1:length(a2))  {
-    if (ind == 1) {
-      sent = substr(text, a2$start[ind], a2$end[ind])
-    } else {
-      sent = c(sent, substr(text, a2$start[ind], a2$end[ind]))
-    }
+# function to extract a vector of sentences from (a) document(s)
+getSentences <- function(documents) {
+  
+  sentences = vector()
+  
+  for (r in 1:length(documents)) {
+    
+    # extract text from document
+    text = documents[[r]]
+    
+    # Convert text to class String from package NLP
+    text <- as.String(text)
+    ## Need sentence and word token annotations.
+    a2 <- annotate(text, list(sent_token_annotator))
+    
+    # Extract sentences
+    sent <- text[a2]
+    sent = as.character(sent)
+    #prevent empty sentences, floor of 3 characters found by trial/error
+    sent = sent[nchar(sent) > 3]
+    sentences = c(sentences, sent)
   }
-  return(sent)
-}
-
-# function to make new corpus out of sentences
-getSentCorp <- function(sentVec) {
+  
+  # return sentences
+  return(sentences)
   
 }
+
+# function to determine if there are any Named Entities of typeEnt in a sentence
+isSentType <- function(text, typeEnt) {
+  #text is a sentence (character)
+  #typeEnt is  one of "location", "organization", "percentage", "person", "misc"
+  
+  # Convert text to class String from package NLP
+  text <- as.String(text)
+  
+  if (typeEnt == "percentage") {
+    en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
+    pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
+  } else {
+    en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
+    #es_ann <- Maxent_Entity_Annotator(language = "es", kind = typeEnt, probs = FALSE,model = NULL)
+    #nl_ann <- Maxent_Entity_Annotator(language = "nl", kind = typeEnt, probs = FALSE,model = NULL)
+    #pipeline <- list(sent_token_annotator,word_token_annotator,en_ann,es_ann,nl_ann)
+    pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
+  }
+  
+  ## Need sentence and word token annotations.
+  a2 <- annotate(text, pipeline)
+  
+  # Determine if there are any entities of this type in the sentence, return TRUE/FALSE
+  
+  .jcall("java/lang/System", method = "gc")
+  
+  return("entity" %in% names(table(a2$type)))
+  
+  # Extract entities
+  #sent <- text[a2[a2$type == "entity"]]
+  #sent = as.character(sent)
+  #return(sent)
+}
+
+#function to remove sentences that are not of the correct type
+pruneSent <- function(sentVec, typeEnt) {
+  sentLog = sapply(sentVec, isSentType,typeEnt = typeEnt)
+  sentVec = sentVec[sentLog]
+  return(sentVec)
+}
+
+# function to make new processed corpus out of sentences
+getSentCorp <- function(sentVec, preProc) {
+  sentCorp = Corpus(VectorSource(sentVec),readerControl = list(language="en"))
+  if (preProc) {sentCorp = preProc(sentCorp)}
+  return(sentCorp)
+}
+
+# function to score sentences
+scoreSentences <- function(keywords, docTermMat) {
+  #give tfidf weightings
+  tfidfMat = weightTfIdf(docTermMat,normalize=TRUE)
+  #stem the keywords 
+  keywords = wordStem(keywords)
+  
+  #find the tokens/columns of the DTM that contain the keywords
+  locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
+  locTok = as.character(c(unlist(locTok)))
+  tokCol = c(which(colnames(docTermMat) %in% locTok))
+  
+  #compute tfidf score for each document
+  docScoreMatches = apply(docTermMat[,tokCol],1,function(x) sum(x) )
+  docScoreNonMatches = apply(docTermMat[,-tokCol],1,function(x) sum(x) )
+  docScore = docScoreMatches / (docScoreNonMatches+0.0001);
+  docRank = sort(docScore,decreasing=TRUE)
+  
+  #return top ten scoring documents
+  return(docRank[1:10])
+}
+
+
+questionAnswer <- function(query) {
+  keys = getKeywords(query)
+  print(c("Query Keywords:",keys))
+  print("Retrieving Documents")
+  docs = getDocuments(keys,dtm)
+  print("Scoring Documents with TF-IDF")
+  topDocs = scoreDocuments(keys,DocumentTermMatrix(corp[docs]))
+  print("Retrieving Sentences")
+  sents = getSentences(corpSen[names(corpSen) %in% names(topDocs)])
+  print("Pruning Sentences by type")
+  #sents = pruneSent(sents, getQueryType(query))
+  sentCorpProc = getSentCorp(sents,TRUE)
+  sentCorp = getSentCorp(sents,FALSE)
+  print("Scoring Sentences")
+  topSents = scoreSentences(keys,DocumentTermMatrix(sentCorpProc))
+  bestAns = sentCorp[names(sentCorp) %in% names(topSents)[1]]
+  print("The best scoring anwer is:")
+  return(bestAns[[1]][[1]])
+}
+
+test = corpSen[names(corpSen) %in% names(documents)]
+inspect(corp[names(corp) %in% names(documents)])
+inspect(corpSen[names(corpSen) %in% names(documents)])
+
+
 

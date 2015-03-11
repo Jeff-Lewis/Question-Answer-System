@@ -14,12 +14,12 @@ library(sqldf)
 #install.packages("openNLPmodels.en", repos = "http://datacube.wu.ac.at/", type = "source")
 #install.packages("openNLPmodels.es", repos = "http://datacube.wu.ac.at/", type = "source")
 #install.packages("openNLPmodels.nl", repos = "http://datacube.wu.ac.at/", type = "source")
-
 library(openNLPmodels.en)
 library(openNLPmodels.es)
 library(openNLPmodels.nl)
-
+library(stringr)
 library(rJava)
+library(slam)
 
 
 #initialize openNLP fcns to do part of speech / sentence tagging
@@ -33,7 +33,7 @@ allFiles = DirSource("reformattedPostings","CP1252")
 corp = Corpus(allFiles,readerControl = list(language="en"))
 
 #Make an unprocessed corpus for sentence selection
-corpSen = Corpus(allFiles,readerControl = list(language="en"))
+corpSen = corp
 
 # function to perform preprocessing on a corpus
 preProc <- function(corpusObj) {
@@ -52,6 +52,14 @@ corp = preProc(corp)
 #options(mc.cores=4)
 
 #create documentTermMatrix
+dtm = DocumentTermMatrix(corp)
+#remove empty documents from corpus
+dtmInd <- rollup(dtm, 2, na.rm=TRUE, FUN = sum)
+rowTotals <- as.matrix(dtmInd) > 0
+empty.rows <- dtm[!rowTotals, ]$dimnames[1][[1]]
+corp = corp[!(names(corp) %in% empty.rows)]
+corpSen = corpSen[!(names(corpSen) %in% empty.rows)]
+#recreate DTM
 dtm = DocumentTermMatrix(corp)
 
 # function to extract type from the query
@@ -97,6 +105,7 @@ getDocuments <- function(keywords, docTermMat) {
   
   #find the tokens/columns of the DTM that contain the keywords
   locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
+  #locTok = sapply(keywords, function(x) colnames(docTermMat)[which(tolower(x) %in% colnames(docTermMat))])
   locTok = as.character(c(unlist(locTok)))
   tokCol = c(which(colnames(docTermMat) %in% locTok))
   
@@ -114,11 +123,12 @@ scoreDocuments <- function(keywords, redDocTermMat) {
   
   #find the tokens/columns of the DTM that contain the keywords
   locTok = sapply(keywords, function(x) colnames(redDocTermMat)[grepl(tolower(x),colnames(redDocTermMat))])
+  #locTok = sapply(keywords, function(x) colnames(redDocTermMat)[which(tolower(x) %in% colnames(redDocTermMat))])
   locTok = as.character(c(unlist(locTok)))
   tokCol = c(which(colnames(redDocTermMat) %in% locTok))
   
   #compute tfidf score for each document
-  docScore = apply(redDocTermMat[,tokCol],1,function(x) sum(x) )
+  docScore = apply(tfidfMat[,tokCol],1,function(x) sum(x) )
   docRank = sort(docScore,decreasing=TRUE)
   
   #return top ten scoring documents
@@ -201,27 +211,50 @@ getSentCorp <- function(sentVec, preProc) {
   return(sentCorp)
 }
 
+countMatches <- function(sentence, keywords) {
+  #stem the keywords 
+  keywords = wordStem(keywords)
+  #break up sentence into words
+  sentWords = unlist(strsplit(sentence," "))
+  
+  matchCt = lapply(keywords,function(x,comp) x %in% comp ,comp=sentWords)
+  return(sum(unlist(matchCt)))
+}
+
 # function to score sentences
-scoreSentences <- function(keywords, docTermMat) {
-  #give tfidf weightings
-  tfidfMat = weightTfIdf(docTermMat,normalize=TRUE)
+scoreSentences <- function(keywords, docTermMat, cleanCorp) {
+  
   #stem the keywords 
   keywords = wordStem(keywords)
   
+  #compute number of shared tokens
+  #find tokens that are not count = 0 in each document
+  #sentTerms = apply(docTermMat,1, function(x) colnames(x)[which(!x == 0)])
+  
+  
+  #give tfidf weightings
+  tfidfMat = weightTfIdf(docTermMat,normalize=TRUE)
+    
   #find the tokens/columns of the DTM that contain the keywords
   locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
+  #locTok = sapply(keywords, function(x) colnames(docTermMat)[which(tolower(x) %in% colnames(docTermMat))])
   locTok = as.character(c(unlist(locTok)))
   tokCol = c(which(colnames(docTermMat) %in% locTok))
   
+  docMatLen = length(tokCol)
+  
+  
   #compute tfidf score for each document
-  docScoreMatches = apply(docTermMat[,tokCol],1,function(x) sum(x) )
-  docScoreNonMatches = apply(docTermMat[,-tokCol],1,function(x) sum(x) )
-  docScore = docScoreMatches / (docScoreNonMatches+0.0001);
+  docScoreMatches = apply(tfidfMat[,tokCol],1,function(x) sum(x) )
+  docScoreNonMatches = apply(tfidfMat[,-tokCol],1,function(x) sum(x) )
+  docScore = docMatLen + docScoreMatches - docScoreNonMatches;
   docRank = sort(docScore,decreasing=TRUE)
   
   #return top ten scoring documents
   return(docRank[1:10])
 }
+
+
 
 
 questionAnswer <- function(query) {
@@ -234,19 +267,20 @@ questionAnswer <- function(query) {
   print("Retrieving Sentences")
   sents = getSentences(corpSen[names(corpSen) %in% names(topDocs)])
   print("Pruning Sentences by type")
-  #sents = pruneSent(sents, getQueryType(query))
+  sents = pruneSent(sents, getQueryType(query))
   sentCorpProc = getSentCorp(sents,TRUE)
   sentCorp = getSentCorp(sents,FALSE)
   print("Scoring Sentences")
-  topSents = scoreSentences(keys,DocumentTermMatrix(sentCorpProc))
-  bestAns = sentCorp[names(sentCorp) %in% names(topSents)[1]]
-  print("The best scoring anwer is:")
-  return(bestAns[[1]][[1]])
+  topSents = scoreSentences(keys,DocumentTermMatrix(sentCorpProc),sentCorp)
+  #bestAns = sentCorp[names(sentCorp) %in% names(topSents)[1]]
+  bestAns = sentCorp[names(sentCorp) %in% names(topSents)]
+  print("The best scoring answer is:")
+  return(inspect(bestAns))
 }
 
-test = corpSen[names(corpSen) %in% names(documents)]
-inspect(corp[names(corp) %in% names(documents)])
-inspect(corpSen[names(corpSen) %in% names(documents)])
+#test = corpSen[names(corpSen) %in% names(documents)]
+#inspect(corp[names(corp) %in% names(documents)])
+#inspect(corpSen[names(corpSen) %in% names(documents)])
 
 
 

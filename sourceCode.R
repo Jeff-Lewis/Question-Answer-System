@@ -7,11 +7,14 @@ require("NLP")
 library(SnowballC)
 #library(RWeka)
 
+# function to initialize the openNLP annotation functions
+initOpenNLP <- function() {
+  #initialize openNLP fcns to do part of speech / sentence tagging
+  sent_token_annotator <- Maxent_Sent_Token_Annotator()
+  word_token_annotator <- Maxent_Word_Token_Annotator()
+  pos_tag_annotator <- Maxent_POS_Tag_Annotator()
+}
 
-#initialize openNLP fcns to do part of speech / sentence tagging
-sent_token_annotator <- Maxent_Sent_Token_Annotator()
-word_token_annotator <- Maxent_Word_Token_Annotator()
-pos_tag_annotator <- Maxent_POS_Tag_Annotator()
 
 #Load the corpus
 allFiles = DirSource("reformattedPostings","CP1252")
@@ -20,19 +23,22 @@ corp = Corpus(allFiles,readerControl = list(language="en"))
 #Make an unprocessed corpus for sentence selection
 corpSen = Corpus(allFiles,readerControl = list(language="en"))
 
-#preprocessing
-corp <- tm_map(corp, removePunctuation)
-corp <- tm_map(corp, removeWords, stopwords("english"))
-corp <- tm_map(corp, stripWhitespace)
-corp <- tm_map(corp, stemDocument)
+# function to perform preprocessing on a corpus
+preProc <- function(corpusObj) {
+  corpusObj <- tm_map(corpusObj, removePunctuation)
+  corpusObj <- tm_map(corpusObj, removeWords, stopwords("english"))
+  corpusObj <- tm_map(corpusObj, stripWhitespace)
+  corpusObj <- tm_map(corpusObj, stemDocument)
+}
 
-#CustomTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 3))
+
 #options(mc.cores=1)
 #CustomTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min = 1, max = 1))}
 #dtm2 <- DocumentTermMatrix(corp, control = list(tokenize = CustomTokenizer))
-dtm = DocumentTermMatrix(corp)
 #options(mc.cores=4)
 
+#create documentTermMatrix
+dtm = DocumentTermMatrix(corp)
 
 # function to extract type from the query
 getQueryType <- function(query) {
@@ -70,10 +76,25 @@ getKeywords <- function(query) {
 }
 
 # function to extract documents with at least 1 keyword match
+getDocuments <- function(keywords, docTermMat) {
+  
+  #stem the keywords 
+  keywords = wordStem(keywords)
+  
+  #find the tokens/columns of the DTM that contain the keywords
+  locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
+  locTok = as.character(c(unlist(locTok)))
+  tokCol = c(which(colnames(docTermMat) %in% locTok))
+  
+  #find the documents that have at least 1 of they keywords/similar keyword matches
+  docInd = apply(docTermMat[,tokCol],1,function(x) sum(x) > 0)
+  return(docInd)
+}
 
-
-
-
+# function to score and sort documents by TF-IDF on keywords
+scoreDocuments <- function(keywords, redDocTermMat) {
+  
+}
 
 # function to extract a vector of sentences from a document
 getSentences <- function(text) {
@@ -88,3 +109,9 @@ getSentences <- function(text) {
   }
   return(sent)
 }
+
+# function to make new corpus out of sentences
+getSentCorp <- function(sentVec) {
+  
+}
+

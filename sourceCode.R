@@ -38,7 +38,7 @@ corpSen = corp
 # function to perform preprocessing on a corpus
 preProc <- function(corpusObj) {
   corpusObj <- tm_map(corpusObj, removePunctuation)
-  corpusObj <- tm_map(corpusObj, removeWords, stopwords("english"))
+  corpusObj <- tm_map(corpusObj, removeWords, c(stopwords("english")))
   corpusObj <- tm_map(corpusObj, stripWhitespace)
   corpusObj <- tm_map(corpusObj, stemDocument)
   return(corpusObj)
@@ -68,10 +68,10 @@ getQueryType <- function(query) {
     qType = "person"
   } else if (grepl("bankrupt",query)) {
     qType = "organization"
-  } else if (grepl("GDP",query)) {
-    qType = "misc"
   } else if (grepl("percentage",query)) {
     qType = "percentage"
+  } else if (grepl("GDP",query)) {
+    qType = "misc"
   } else {
     qType = "misc"
   }
@@ -116,8 +116,8 @@ getDocuments <- function(keywords, docTermMat) {
 
 # function to score and sort documents by TF-IDF on keywords
 scoreDocuments <- function(keywords, redDocTermMat) {
-  #give tfidf weightings
-  tfidfMat = weightTfIdf(redDocTermMat,normalize=TRUE)
+  #give SMART weightings
+  tfidfMat = weightSMART(redDocTermMat,spec="apc")
   #stem the keywords 
   keywords = wordStem(keywords)
   
@@ -132,7 +132,7 @@ scoreDocuments <- function(keywords, redDocTermMat) {
   docRank = sort(docScore,decreasing=TRUE)
   
   #return top ten scoring documents
-  return(docRank[1:10])
+  return(docRank[1:5])
 }
 
 # function to extract a vector of sentences from (a) document(s)
@@ -168,28 +168,33 @@ isSentType <- function(text, typeEnt) {
   #text is a sentence (character)
   #typeEnt is  one of "location", "organization", "percentage", "person", "misc"
   
-  # Convert text to class String from package NLP
-  text <- as.String(text)
-  
-  if (typeEnt == "percentage") {
-    en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
-    pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
+  if (typeEnt != "misc") {
+    
+    # Convert text to class String from package NLP
+    text <- as.String(text)
+    
+    if (typeEnt == "percentage") {
+      en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
+      pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
+    } else {
+      en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
+      #es_ann <- Maxent_Entity_Annotator(language = "es", kind = typeEnt, probs = FALSE,model = NULL)
+      #nl_ann <- Maxent_Entity_Annotator(language = "nl", kind = typeEnt, probs = FALSE,model = NULL)
+      #pipeline <- list(sent_token_annotator,word_token_annotator,en_ann,es_ann,nl_ann)
+      pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
+    }
+    
+    ## Need sentence and word token annotations.
+    a2 <- annotate(text, pipeline)
+    
+    # Determine if there are any entities of this type in the sentence, return TRUE/FALSE
+    
+    .jcall("java/lang/System", method = "gc")
+    
+    return("entity" %in% names(table(a2$type)))
   } else {
-    en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
-    #es_ann <- Maxent_Entity_Annotator(language = "es", kind = typeEnt, probs = FALSE,model = NULL)
-    #nl_ann <- Maxent_Entity_Annotator(language = "nl", kind = typeEnt, probs = FALSE,model = NULL)
-    #pipeline <- list(sent_token_annotator,word_token_annotator,en_ann,es_ann,nl_ann)
-    pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
+    return(TRUE)
   }
-  
-  ## Need sentence and word token annotations.
-  a2 <- annotate(text, pipeline)
-  
-  # Determine if there are any entities of this type in the sentence, return TRUE/FALSE
-  
-  .jcall("java/lang/System", method = "gc")
-  
-  return("entity" %in% names(table(a2$type)))
   
   # Extract entities
   #sent <- text[a2[a2$type == "entity"]]
@@ -233,7 +238,7 @@ scoreSentences <- function(keywords, docTermMat, cleanCorp) {
   
   
   #give tfidf weightings
-  tfidfMat = weightTfIdf(docTermMat,normalize=TRUE)
+  tfidfMat = weightSMART(docTermMat,spec="apc")
     
   #find the tokens/columns of the DTM that contain the keywords
   locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
@@ -247,11 +252,11 @@ scoreSentences <- function(keywords, docTermMat, cleanCorp) {
   #compute tfidf score for each document
   docScoreMatches = apply(tfidfMat[,tokCol],1,function(x) sum(x) )
   docScoreNonMatches = apply(tfidfMat[,-tokCol],1,function(x) sum(x) )
-  docScore = docMatLen + docScoreMatches - docScoreNonMatches;
+  docScore = docMatLen * ( docScoreMatches - docScoreNonMatches);
   docRank = sort(docScore,decreasing=TRUE)
   
   #return top ten scoring documents
-  return(docRank[1:10])
+  return(docRank[1:20])
 }
 
 
@@ -262,7 +267,7 @@ questionAnswer <- function(query) {
   print(c("Query Keywords:",keys))
   print("Retrieving Documents")
   docs = getDocuments(keys,dtm)
-  print("Scoring Documents with TF-IDF")
+  print("Scoring Documents with SMART TF-IDF")
   topDocs = scoreDocuments(keys,DocumentTermMatrix(corp[docs]))
   print("Retrieving Sentences")
   sents = getSentences(corpSen[names(corpSen) %in% names(topDocs)])

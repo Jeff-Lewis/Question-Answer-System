@@ -1,6 +1,9 @@
 #IEMS 395 Text Mining
 #Nick Paras
 
+
+# Initialization ----------------------------------------------------------
+
 #set new heap size for java
 options(java.parameters = "-Xmx4000m")
 
@@ -62,16 +65,20 @@ corpSen = corpSen[!(names(corpSen) %in% empty.rows)]
 #recreate DTM
 dtm = DocumentTermMatrix(corp)
 
+
+
+# Define Functions --------------------------------------------------------
+
 # function to extract type from the query
 getQueryType <- function(query) {
   if (grepl("CEO",query)) {
     qType = "person"
   } else if (grepl("bankrupt",query)) {
     qType = "organization"
-  } else if (grepl("percentage",query)) {
+  } else if (grepl("percent",query)) {
     qType = "percentage"
   } else if (grepl("GDP",query)) {
-    qType = "misc"
+    qType = "gdp"
   } else {
     qType = "misc"
   }
@@ -118,12 +125,13 @@ getDocuments <- function(keywords, docTermMat) {
 scoreDocuments <- function(keywords, redDocTermMat) {
   #give SMART weightings
   tfidfMat = weightSMART(redDocTermMat,spec="apc")
+  #tfidfMat = weightTfIdf(redDocTermMat,normalize=FALSE)
+  
   #stem the keywords 
   keywords = wordStem(keywords)
   
   #find the tokens/columns of the DTM that contain the keywords
   locTok = sapply(keywords, function(x) colnames(redDocTermMat)[grepl(tolower(x),colnames(redDocTermMat))])
-  #locTok = sapply(keywords, function(x) colnames(redDocTermMat)[which(tolower(x) %in% colnames(redDocTermMat))])
   locTok = as.character(c(unlist(locTok)))
   tokCol = c(which(colnames(redDocTermMat) %in% locTok))
   
@@ -132,7 +140,7 @@ scoreDocuments <- function(keywords, redDocTermMat) {
   docRank = sort(docScore,decreasing=TRUE)
   
   #return top ten scoring documents
-  return(docRank[1:5])
+  return(docRank[1:10])
 }
 
 # function to extract a vector of sentences from (a) document(s)
@@ -163,6 +171,18 @@ getSentences <- function(documents) {
   
 }
 
+# function to extract a vector of sentences from (a) document(s)
+getSentenceMatches <- function(sentenceVector, keys) {
+  
+  #find the indices that have at least one match
+  sentInd = sapply(sentenceVector, countMatches, keywords = keys)
+  sentInd = sentInd > 0
+  
+  return(sentenceVector[sentInd])
+  
+}
+
+
 # function to determine if there are any Named Entities of typeEnt in a sentence
 isSentType <- function(text, typeEnt) {
   #text is a sentence (character)
@@ -173,16 +193,10 @@ isSentType <- function(text, typeEnt) {
     # Convert text to class String from package NLP
     text <- as.String(text)
     
-    if (typeEnt == "percentage") {
+    if ((typeEnt == "percentage") ){
       en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
       pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
-    } else {
-      en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
-      #es_ann <- Maxent_Entity_Annotator(language = "es", kind = typeEnt, probs = FALSE,model = NULL)
-      #nl_ann <- Maxent_Entity_Annotator(language = "nl", kind = typeEnt, probs = FALSE,model = NULL)
-      #pipeline <- list(sent_token_annotator,word_token_annotator,en_ann,es_ann,nl_ann)
-      pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
-    }
+    
     
     ## Need sentence and word token annotations.
     a2 <- annotate(text, pipeline)
@@ -191,7 +205,12 @@ isSentType <- function(text, typeEnt) {
     
     .jcall("java/lang/System", method = "gc")
     
-    return("entity" %in% names(table(a2$type)))
+    return((("entity" %in% names(table(a2$type))) || grepl("percentage point",text)))# && grepl("GDP", text))
+    } else if ((typeEnt == "person") || (typeEnt == "organization")) {
+      return(grepl("[A-Z]+[a-z]*\ [A-Z]+[a-z]+[A-Z]*[a-z]*",text))
+    } else {
+      return(grepl("GDP",text) || grepl("gdp",text))
+    }
   } else {
     return(TRUE)
   }
@@ -201,6 +220,7 @@ isSentType <- function(text, typeEnt) {
   #sent = as.character(sent)
   #return(sent)
 }
+
 
 #function to remove sentences that are not of the correct type
 pruneSent <- function(sentVec, typeEnt) {
@@ -218,12 +238,20 @@ getSentCorp <- function(sentVec, preProc) {
 
 countMatches <- function(sentence, keywords) {
   #stem the keywords 
-  keywords = wordStem(keywords)
+  keywords = wordStem(tolower(keywords))
   #break up sentence into words
   sentWords = unlist(strsplit(sentence," "))
-  
+  sentWords = wordStem(tolower(c(sentWords)))
   matchCt = lapply(keywords,function(x,comp) x %in% comp ,comp=sentWords)
   return(sum(unlist(matchCt)))
+}
+
+countCont <- function(sentence, keywords) {
+  #stem the keywords
+  keywords = wordStem(tolower(keywords))
+  #check if the keywords are in the sentence, take sum
+  mts = lapply(keywords,grepl,x=sentence)
+  return(sum(unlist(mts)))
 }
 
 # function to score sentences
@@ -231,14 +259,10 @@ scoreSentences <- function(keywords, docTermMat, cleanCorp) {
   
   #stem the keywords 
   keywords = wordStem(keywords)
-  
-  #compute number of shared tokens
-  #find tokens that are not count = 0 in each document
-  #sentTerms = apply(docTermMat,1, function(x) colnames(x)[which(!x == 0)])
-  
-  
+    
   #give tfidf weightings
   tfidfMat = weightSMART(docTermMat,spec="apc")
+  #tfidfMat = weightTfIdf(docTermMat,normalize = TRUE)
     
   #find the tokens/columns of the DTM that contain the keywords
   locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
@@ -246,46 +270,104 @@ scoreSentences <- function(keywords, docTermMat, cleanCorp) {
   locTok = as.character(c(unlist(locTok)))
   tokCol = c(which(colnames(docTermMat) %in% locTok))
   
-  docMatLen = length(tokCol)
-  
-  
+  #error checking, ensure docMatLen is numeric even if NULL fcn call result
+  docMatLen = sapply(cleanCorp, countCont, keywords=keywords)
+  if (!is.numeric(docMatLen)) {
+    docMatLen = 1
+  }
+    
   #compute tfidf score for each document
   docScoreMatches = apply(tfidfMat[,tokCol],1,function(x) sum(x) )
   docScoreNonMatches = apply(tfidfMat[,-tokCol],1,function(x) sum(x) )
-  docScore = docMatLen * ( docScoreMatches - docScoreNonMatches);
+  docScore = 5 * docMatLen +  2 * docScoreMatches - docScoreNonMatches;
   docRank = sort(docScore,decreasing=TRUE)
   
   #return top ten scoring documents
-  return(docRank[1:20])
+  return(docRank[1:10])
 }
 
-
+# function to add additional keywords based on question type for more robust answers
+augKey <- function(keys, type) {
+  #initialize return variable
+  finalKeys = keys
+  
+  if (type == "gdp") {
+    finalKeys = c(finalKeys, "factors", "components", "%", "percent", "growth")
+  } else if (type == "organization") {
+    if (substr(keys[4],1,2)=="20") {
+      prefix = paste(substr(keys[4],3,4),"1",sep="-")
+      finalKeys = c(finalKeys, "case", prefix)
+    } else {
+      finalKeys = c(finalKeys, "case")
+    }
+  }
+  
+  return(finalKeys)
+}
 
 
 questionAnswer <- function(query) {
+  #note corp and dtm are global
   keys = getKeywords(query)
-  print(c("Query Keywords:",keys))
-  print("Retrieving Documents")
+  type = getQueryType(query)
+  cat("\n")
+  cat(c("Query Type:",type,"\n"))
+  cat(c("Query Keywords:", paste(keys, sep=", ")),"\n")
+  keys = augKey(keys,type)
+  cat("Retrieving Documents\n")
   docs = getDocuments(keys,dtm)
-  print("Scoring Documents with SMART TF-IDF")
+  cat("Scoring Documents with SMART TF-IDF\n")
   topDocs = scoreDocuments(keys,DocumentTermMatrix(corp[docs]))
-  print("Retrieving Sentences")
+  cat("Retrieving Sentences\n")
   sents = getSentences(corpSen[names(corpSen) %in% names(topDocs)])
-  print("Pruning Sentences by type")
-  sents = pruneSent(sents, getQueryType(query))
+  sents = getSentenceMatches(sents,keys)
+  cat("Pruning Sentences by Type\n")
+  sents = pruneSent(sents, type)
   sentCorpProc = getSentCorp(sents,TRUE)
   sentCorp = getSentCorp(sents,FALSE)
-  print("Scoring Sentences")
+  cat("Scoring Sentences\n")
   topSents = scoreSentences(keys,DocumentTermMatrix(sentCorpProc),sentCorp)
-  #bestAns = sentCorp[names(sentCorp) %in% names(topSents)[1]]
-  bestAns = sentCorp[names(sentCorp) %in% names(topSents)]
-  print("The best scoring answer is:")
-  return(inspect(bestAns))
+  bestAns = sents[as.numeric(names(topSents[which(is.na(topSents)==FALSE)]))]
+  cat("The 10 best scoring answers (in descending order) are:\n")
+  cat("\n")
+  return(bestAns)
 }
 
-#test = corpSen[names(corpSen) %in% names(documents)]
-#inspect(corp[names(corp) %in% names(documents)])
-#inspect(corpSen[names(corpSen) %in% names(documents)])
+
+
+# Sample Queries ----------------------------------------------------------
+
+# 3 sample CEO queries
+questionAnswer("Who is the CEO of Apple?")
+questionAnswer("Who is the CEO of Facebook?")
+questionAnswer("Who it the CEO of Microsoft?")
+
+# 3 sample bankruptcy queries
+questionAnswer("Which companies went bankrupt in September 2008?")
+questionAnswer("Which companies went bankrupt in October 2011?")
+questionAnswer("Which companies went bankrupt in September 2014?")
+
+# GDP Query
+questionAnswer("What affects GDP?")
+
+# 3 sample follow-up queries
+questionAnswer("What percentage is associated with personal consumption?")
+questionAnswer("What percentage is associated with exports?")
+questionAnswer("What percentage is associated with federal defense spending?")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

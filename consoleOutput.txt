@@ -1,0 +1,582 @@
+
+R version 3.1.2 (2014-10-31) -- "Pumpkin Helmet"
+Copyright (C) 2014 The R Foundation for Statistical Computing
+Platform: x86_64-apple-darwin13.4.0 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+[Workspace loaded from ~/Documents/IEMS_395_HW4/.RData]
+
+> #IEMS 395 Text Mining
+> #IEMS 395 Text Mining
+> #Nick Paras
+> 
+> 
+> # Initialization ----------------------------------------------------------
+> 
+> #set new heap size for java
+> options(java.parameters = "-Xmx4000m")
+> 
+> library(tm)
+Loading required package: NLP
+> #library(plyr)
+> library(openNLP)
+Warning message:
+package ‘openNLP’ was built under R version 3.1.3 
+> require("NLP")
+> library(SnowballC)
+> library(sqldf)
+Loading required package: gsubfn
+Loading required package: proto
+Could not load tcltk.  Will use slower R code instead.
+Loading required package: RSQLite
+Loading required package: DBI
+> #library(RWeka)
+> #install.packages("openNLPmodels.en", repos = "http://datacube.wu.ac.at/", type = "source")
+> #install.packages("openNLPmodels.es", repos = "http://datacube.wu.ac.at/", type = "source")
+> #install.packages("openNLPmodels.nl", repos = "http://datacube.wu.ac.at/", type = "source")
+> library(openNLPmodels.en)
+> library(openNLPmodels.es)
+> library(openNLPmodels.nl)
+> library(stringr)
+> library(rJava)
+> library(slam)
+> 
+> 
+> #initialize openNLP fcns to do part of speech / sentence tagging
+> sent_token_annotator <- Maxent_Sent_Token_Annotator()
+> word_token_annotator <- Maxent_Word_Token_Annotator()
+> pos_tag_annotator <- Maxent_POS_Tag_Annotator()
+> 
+> 
+> #Load the corpus
+> allFiles = DirSource("reformattedPostings","CP1252")
+> corp = Corpus(allFiles,readerControl = list(language="en"))
+> 
+> #Make an unprocessed corpus for sentence selection
+> corpSen = corp
+> 
+> # function to perform preprocessing on a corpus
+> preProc <- function(corpusObj) {
++   corpusObj <- tm_map(corpusObj, removePunctuation)
++   corpusObj <- tm_map(corpusObj, removeWords, c(stopwords("english")))
++   corpusObj <- tm_map(corpusObj, stripWhitespace)
++   corpusObj <- tm_map(corpusObj, stemDocument)
++   return(corpusObj)
++ }
+> 
+> corp = preProc(corp)
+> 
+> #options(mc.cores=1)
+> #CustomTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min = 1, max = 1))}
+> #dtm2 <- DocumentTermMatrix(corp, control = list(tokenize = CustomTokenizer))
+> #options(mc.cores=4)
+> 
+> #create documentTermMatrix
+> dtm = DocumentTermMatrix(corp)
+> #remove empty documents from corpus
+> dtmInd <- rollup(dtm, 2, na.rm=TRUE, FUN = sum)
+> rowTotals <- as.matrix(dtmInd) > 0
+> empty.rows <- dtm[!rowTotals, ]$dimnames[1][[1]]
+> corp = corp[!(names(corp) %in% empty.rows)]
+> corpSen = corpSen[!(names(corpSen) %in% empty.rows)]
+> #recreate DTM
+> dtm = DocumentTermMatrix(corp)
+> 
+> 
+> 
+> # Define Functions --------------------------------------------------------
+> 
+> # function to extract type from the query
+> getQueryType <- function(query) {
++   if (grepl("CEO",query)) {
++     qType = "person"
++   } else if (grepl("bankrupt",query)) {
++     qType = "organization"
++   } else if (grepl("percent",query)) {
++     qType = "percentage"
++   } else if (grepl("GDP",query)) {
++     qType = "gdp"
++   } else {
++     qType = "misc"
++   }
++   return(qType)
++ }
+> 
+> # function to extract keywords from the queries
+> getKeywords <- function(query) {
++   
++   keyPosDict = data.frame(tags=c("NNP", "NNPS", "NN", "NNS", "JJ", "JJR", "JJS", "CD"))
++   ## Need sentence and word token annotations.
++   a2 <- annotate(query, list(sent_token_annotator, word_token_annotator))
++   a3 <- annotate(query, pos_tag_annotator, a2)
++   a3w <- (subset(a3, type == "word"))
++   a4 = data.frame(a3w)[,1:4]
++   for (row in 1:nrow(a4)) {
++     a4$tag[row] = data.frame(a3w)$features[[row]]$POS 
++   }
++   keys = sqldf('select * from a4 where tag in (select * from keyPosDict);')
++   for (row in 1:nrow(keys)) {
++     keys$token[row] = substr(query,keys$start[row],keys$end[row])
++   }
++   return(keys$token)
++ }
+> 
+> # function to extract documents with at least 1 keyword match
+> getDocuments <- function(keywords, docTermMat) {
++   
++   #stem the keywords 
++   keywords = wordStem(keywords)
++   
++   #find the tokens/columns of the DTM that contain the keywords
++   locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
++   #locTok = sapply(keywords, function(x) colnames(docTermMat)[which(tolower(x) %in% colnames(docTermMat))])
++   locTok = as.character(c(unlist(locTok)))
++   tokCol = c(which(colnames(docTermMat) %in% locTok))
++   
++   #find the documents that have at least 1 of they keywords/similar keyword matches
++   docInd = apply(docTermMat[,tokCol],1,function(x) sum(x) > 0)
++   return(docInd)
++ }
+> 
+> # function to score and sort documents by TF-IDF on keywords
+> scoreDocuments <- function(keywords, redDocTermMat) {
++   #give SMART weightings
++   tfidfMat = weightSMART(redDocTermMat,spec="apc")
++   #tfidfMat = weightTfIdf(redDocTermMat,normalize=FALSE)
++   
++   #stem the keywords 
++   keywords = wordStem(keywords)
++   
++   #find the tokens/columns of the DTM that contain the keywords
++   locTok = sapply(keywords, function(x) colnames(redDocTermMat)[grepl(tolower(x),colnames(redDocTermMat))])
++   locTok = as.character(c(unlist(locTok)))
++   tokCol = c(which(colnames(redDocTermMat) %in% locTok))
++   
++   #compute tfidf score for each document
++   docScore = apply(tfidfMat[,tokCol],1,function(x) sum(x) )
++   docRank = sort(docScore,decreasing=TRUE)
++   
++   #return top ten scoring documents
++   return(docRank[1:10])
++ }
+> 
+> # function to extract a vector of sentences from (a) document(s)
+> getSentences <- function(documents) {
++   
++   sentences = vector()
++   
++   for (r in 1:length(documents)) {
++     
++     # extract text from document
++     text = documents[[r]]
++     
++     # Convert text to class String from package NLP
++     text <- as.String(text)
++     ## Need sentence and word token annotations.
++     a2 <- annotate(text, list(sent_token_annotator))
++     
++     # Extract sentences
++     sent <- text[a2]
++     sent = as.character(sent)
++     #prevent empty sentences, floor of 3 characters found by trial/error
++     sent = sent[nchar(sent) > 3]
++     sentences = c(sentences, sent)
++   }
++   
++   # return sentences
++   return(sentences)
++   
++ }
+> 
+> # function to extract a vector of sentences from (a) document(s)
+> getSentenceMatches <- function(sentenceVector, keys) {
++   
++   #find the indices that have at least one match
++   sentInd = sapply(sentenceVector, countMatches, keywords = keys)
++   sentInd = sentInd > 0
++   
++   return(sentenceVector[sentInd])
++   
++ }
+> 
+> 
+> # function to determine if there are any Named Entities of typeEnt in a sentence
+> isSentType <- function(text, typeEnt) {
++   #text is a sentence (character)
++   #typeEnt is  one of "location", "organization", "percentage", "person", "misc"
++   
++   if (typeEnt != "misc") {
++     
++     # Convert text to class String from package NLP
++     text <- as.String(text)
++     
++     if ((typeEnt == "percentage") ){
++       en_ann <- Maxent_Entity_Annotator(language = "en", kind = typeEnt, probs = FALSE,model = NULL)
++       pipeline <- list(sent_token_annotator,word_token_annotator,en_ann)
++     
++     
++     ## Need sentence and word token annotations.
++     a2 <- annotate(text, pipeline)
++     
++     # Determine if there are any entities of this type in the sentence, return TRUE/FALSE
++     
++     .jcall("java/lang/System", method = "gc")
++     
++     return((("entity" %in% names(table(a2$type))) || grepl("percentage point",text)))# && grepl("GDP", text))
++     } else if ((typeEnt == "person") || (typeEnt == "organization")) {
++       return(grepl("[A-Z]+[a-z]*\ [A-Z]+[a-z]+[A-Z]*[a-z]*",text))
++     } else {
++       return(grepl("GDP",text) || grepl("gdp",text))
++     }
++   } else {
++     return(TRUE)
++   }
++   
++   # Extract entities
++   #sent <- text[a2[a2$type == "entity"]]
++   #sent = as.character(sent)
++   #return(sent)
++ }
+> 
+> 
+> #function to remove sentences that are not of the correct type
+> pruneSent <- function(sentVec, typeEnt) {
++   sentLog = sapply(sentVec, isSentType,typeEnt = typeEnt)
++   sentVec = sentVec[sentLog]
++   return(sentVec)
++ }
+> 
+> # function to make new processed corpus out of sentences
+> getSentCorp <- function(sentVec, preProc) {
++   sentCorp = Corpus(VectorSource(sentVec),readerControl = list(language="en"))
++   if (preProc) {sentCorp = preProc(sentCorp)}
++   return(sentCorp)
++ }
+> 
+> countMatches <- function(sentence, keywords) {
++   #stem the keywords 
++   keywords = wordStem(tolower(keywords))
++   #break up sentence into words
++   sentWords = unlist(strsplit(sentence," "))
++   sentWords = wordStem(tolower(c(sentWords)))
++   matchCt = lapply(keywords,function(x,comp) x %in% comp ,comp=sentWords)
++   return(sum(unlist(matchCt)))
++ }
+> 
+> countCont <- function(sentence, keywords) {
++   #stem the keywords
++   keywords = wordStem(tolower(keywords))
++   #check if the keywords are in the sentence, take sum
++   mts = lapply(keywords,grepl,x=sentence)
++   return(sum(unlist(mts)))
++ }
+> 
+> # function to score sentences
+> scoreSentences <- function(keywords, docTermMat, cleanCorp) {
++   
++   #stem the keywords 
++   keywords = wordStem(keywords)
++     
++   #give tfidf weightings
++   tfidfMat = weightSMART(docTermMat,spec="apc")
++   #tfidfMat = weightTfIdf(docTermMat,normalize = TRUE)
++     
++   #find the tokens/columns of the DTM that contain the keywords
++   locTok = sapply(keywords, function(x) colnames(docTermMat)[grepl(tolower(x),colnames(docTermMat))])
++   #locTok = sapply(keywords, function(x) colnames(docTermMat)[which(tolower(x) %in% colnames(docTermMat))])
++   locTok = as.character(c(unlist(locTok)))
++   tokCol = c(which(colnames(docTermMat) %in% locTok))
++   
++   #error checking, ensure docMatLen is numeric even if NULL fcn call result
++   docMatLen = sapply(cleanCorp, countCont, keywords=keywords)
++   if (!is.numeric(docMatLen)) {
++     docMatLen = 1
++   }
++     
++   #compute tfidf score for each document
++   docScoreMatches = apply(tfidfMat[,tokCol],1,function(x) sum(x) )
++   docScoreNonMatches = apply(tfidfMat[,-tokCol],1,function(x) sum(x) )
++   docScore = 5 * docMatLen +  2 * docScoreMatches - docScoreNonMatches;
++   docRank = sort(docScore,decreasing=TRUE)
++   
++   #return top ten scoring documents
++   return(docRank[1:10])
++ }
+> 
+> # function to add additional keywords based on question type for more robust answers
+> augKey <- function(keys, type) {
++   #initialize return variable
++   finalKeys = keys
++   
++   if (type == "gdp") {
++     finalKeys = c(finalKeys, "factors", "components", "%", "percent", "growth")
++   } else if (type == "organization") {
++     if (substr(keys[4],1,2)=="20") {
++       prefix = paste(substr(keys[4],3,4),"1",sep="-")
++       finalKeys = c(finalKeys, "case", prefix)
++     } else {
++       finalKeys = c(finalKeys, "case")
++     }
++   }
++   
++   return(finalKeys)
++ }
+> 
+> 
+> questionAnswer <- function(query) {
++   #note corp and dtm are global
++   keys = getKeywords(query)
++   type = getQueryType(query)
++   cat("\n")
++   cat(c("Query Type:",type,"\n"))
++   cat(c("Query Keywords:", paste(keys, sep=", ")),"\n")
++   keys = augKey(keys,type)
++   cat("Retrieving Documents\n")
++   docs = getDocuments(keys,dtm)
++   cat("Scoring Documents with SMART TF-IDF\n")
++   topDocs = scoreDocuments(keys,DocumentTermMatrix(corp[docs]))
++   cat("Retrieving Sentences\n")
++   sents = getSentences(corpSen[names(corpSen) %in% names(topDocs)])
++   sents = getSentenceMatches(sents,keys)
++   cat("Pruning Sentences by Type\n")
++   sents = pruneSent(sents, type)
++   sentCorpProc = getSentCorp(sents,TRUE)
++   sentCorp = getSentCorp(sents,FALSE)
++   cat("Scoring Sentences\n")
++   topSents = scoreSentences(keys,DocumentTermMatrix(sentCorpProc),sentCorp)
++   bestAns = sents[as.numeric(names(topSents[which(is.na(topSents)==FALSE)]))]
++   cat("The 10 best scoring answers (in descending order) are:\n")
++   cat("\n")
++   return(bestAns)
++ }
+> 
+> 
+> 
+> # Sample Queries ----------------------------------------------------------
+> 
+> # 3 sample CEO queries
+> questionAnswer("Who is the CEO of Apple?")
+
+Query Type: person 
+Query Keywords: CEO Apple 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "APApple CEO Tim Cook announcing the new iPhones."                                                                                                                                                                        
+ [2] "Fossil shares were down more than 3%, while Movado shares were off 1.5%, after Apple announced Apple Watch."                                                                                                             
+ [3] "Is AppleCare a waste of money or a good way to protect your costly Apple products?"                                                                                                                                      
+ [4] "Is AppleCare a waste of money or a good way to protect your costly Apple products?"                                                                                                                                      
+ [5] "And Apple easily crushed expectations on the top and the bottom lines."                                                                                                                                                  
+ [6] "Apple Pay has a chance at changing the mobile payments game completely."                                                                                                                                                 
+ [7] "APApple CEO Tim Cook.Here's the funny thing about Apple's earnings report from last night: No matter what you thought of the company, the report can easily justify your opinion."                                       
+ [8] "If Apple hits the target of 80 million, it would be 33% year-over-year growth, which would be very strong for Apple's iPhone business, which has had growth in the single digits and low double digits lately."          
+ [9] "AP ImagesClosely-followed hedge fund manager David Einhorn, the CEO of Greenlight Capital, added to his Apple stake in the fourth quarter, according to a 13F filing."                                                   
+[10] "GT Advanced Technologies, which makes sapphire displays, was down as much as 11% after Apple announced that sapphire displays would be in Apple Watch, but not the company's newest iPhones: iPhone 6 and iPhone 6 Plus."
+> questionAnswer("Who is the CEO of Facebook?")
+
+Query Type: person 
+Query Keywords: CEO Facebook 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "Follow BI Video: On Facebook"                                                                                                           
+ [2] "TumblrFacebook CEO Mark ZuckerbergFacebook isn't just popular with its 1.3 billion (and counting) users."                               
+ [3] "Facebook has a sales office in Hong Kong."                                                                                              
+ [4] "Facebook's founder and CEO Mark Zuckerberg owns about 500 million shares of Facebook stock."                                            
+ [5] "Microsoft's CEO asked Mark Zuckerberg in 2007."                                                                                         
+ [6] "Produced by Matthew Stuart Follow BI Video: On Facebook"                                                                                
+ [7] "Time Warner CEO Jeff Bewkes nixed the idea."                                                                                            
+ [8] "Stephen Lam/ReutersFacebook CEO Mark ZuckerbergCan’t stand the big boss at work? Try getting a job at LinkedIn, Facebook, or Starbucks."
+ [9] "Stephen Lam/ReutersFacebook CEO Mark ZuckerbergCan’t stand the big boss at work? Try getting a job at LinkedIn, Facebook, or Starbucks."
+[10] "During the Spring of 2005, Facebook (still TheFacebook) was talking to The Washington Post Company about an investment."                
+> questionAnswer("Who it the CEO of Microsoft?")
+
+Query Type: person 
+Query Keywords: CEO Microsoft 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "Business Insider/Julie BortMicrosoft CEO Steve BallmerMicrosoft earnings are out!"                            
+ [2] "APMicrosoft CEO Satya Nadella.Microsoft reported its Q2 2014 earnings Tuesday afternoon."                     
+ [3] "CEO Satya NadellaMicrosoft earnings are out, and they're solid."                                              
+ [4] "Microsoft FREE AppDownload"                                                                                   
+ [5] "Microsoft just announced CEO Steve Ballmer will retire."                                                      
+ [6] "We recently came out with our list of the Sexiest CEOs Alive!"                                                
+ [7] "We recently came out with our list of the Sexiest CEOs Alive!"                                                
+ [8] "In August, Microsoft CEO Steve Ballmer announced he will be stepping down after 13 years leading the company."
+ [9] "Then a few weeks later CEO Steve Ballmer retired."                                                            
+[10] "We spoke with Chris Suh, head of investor relations at Microsoft after the report."                           
+> 
+> # 3 sample bankruptcy queries
+> questionAnswer("Which companies went bankrupt in September 2008?")
+
+Query Type: organization 
+Query Keywords: companies bankrupt September 2008 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "Lehman Brothers collapsed in September 2008 in the highest-profile failure of a bank during the financial crisis."                                                                                                                    
+ [2] "Lehman Brothers Holdings Inc, the Wall Street bank that filed for bankruptcy on September 15, 2008, on Thursday is returning $17.9 billion to creditors, boosting its payout so far to $80.4 billion in five distributions."          
+ [3] "The case is In Re: Trump Entertainment Resorts Inc, U.S. Bankruptcy Court, District of Delaware, No:14-12103."                                                                                                                        
+ [4] "\"The Trustee brings this action against Defendants for acts and omissions that culminated in the business collapse of the Company and the bankruptcies of the Debtors."                                                              
+ [5] "The cases are In re: MF Global Inc, U.S. Bankruptcy Court, Southern District of New York, No. 11-02790; and In re: MF Global Holdings Ltd in the same court, No. 11-15059."                                                           
+ [6] "Romney opposed an auto bailout in a November 2008 op-ed in the New York Times, which was memorably titled, \"Let Detroit Go Bankrupt.\""                                                                                              
+ [7] "HJ Heinz, the son of immigrant parents, built this this company from scratch."                                                                                                                                                        
+ [8] "By Jonathan Stempel NEW YORK (Reuters) - Former customers of MF Global Holdings Ltd's bankrupt brokerage will recoup all $6.7 billion they are owed following the completion of a payout that will begin on Friday, its trustee said."
+ [9] "APEarlier, today Warren Buffett's Berkshire Hathaway announced it and 3G Capital would acquire HJ Heinz Company in a transaction worth a whopping $28 billion."                                                                       
+[10] "Here's the chart: Gallup The score reflects 37% of workers telling Gallup that their employer is hiring, and 15% saying their company is letting people go and reducing the size of its workforce."                                   
+> questionAnswer("Which companies went bankrupt in October 2011?")
+
+Query Type: organization 
+Query Keywords: companies bankrupt October 2011 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+[1] "Market worries about that exposure was among the factors that led to MF Global's quick collapse and October 31, 2011, bankruptcy."                                                                                                           
+[2] "The case is In Re: Trump Entertainment Resorts Inc, U.S. Bankruptcy Court, District of Delaware, No:14-12103."                                                                                                                               
+[3] "\"The Trustee brings this action against Defendants for acts and omissions that culminated in the business collapse of the Company and the bankruptcies of the Debtors."                                                                     
+[4] "Broker-dealer MF Global collapsed in the fall of 2011 and more than a billion in customer funds went missing."                                                                                                                               
+[5] "The Internal Revenue Service told Delphi in June that it would be taxed as a U.S. company due to the sale of its assets to Delphi Holdings LLC after it emerged from bankruptcy in 2009, the company said in a regulatory filing on July 31."
+[6] "HJ Heinz, the son of immigrant parents, built this this company from scratch."                                                                                                                                                               
+[7] "APEarlier, today Warren Buffett's Berkshire Hathaway announced it and 3G Capital would acquire HJ Heinz Company in a transaction worth a whopping $28 billion."                                                                              
+[8] "\"We will continue to prepare and file our financial statements on the basis that neither Delphi Automotive LLP nor Delphi Automotive Plc is a domestic corporation for U.S. federal income tax purposes,\" the company said in the filing." 
+> questionAnswer("Which companies went bankrupt in September 2014?")
+
+Query Type: organization 
+Query Keywords: companies bankrupt September 2014 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+[1] "The case is In Re: Trump Entertainment Resorts Inc, U.S. Bankruptcy Court, District of Delaware, No:14-12103."                                                                                                                                               
+[2] "\"The Trustee brings this action against Defendants for acts and omissions that culminated in the business collapse of the Company and the bankruptcies of the Debtors."                                                                                     
+[3] "REUTERS/Joshua LottModels relax before presenting creations from the Michael Kors Spring/Summer 2014 collection during New York Fashion Week, September 11, 2013.Good morning."                                                                              
+[4] "HJ Heinz, the son of immigrant parents, built this this company from scratch."                                                                                                                                                                               
+[5] "These forecasts are based on the July SPCS data release this morning and the August 2014 Zillow Home Value Index (ZHVI), released September 18. Officially, the SPCS Composite Home Price Indices for August will not be released until Tuesday, October 28."
+[6] "S&amp;P Dow Jones Indices managing director David Blitzer said, \"After a long period when home prices rose, but at a slower pace with each passing month, we are seeing hints that prices could end 2014 on a strong note and accelerate into 2015.\""      
+[7] "APEarlier, today Warren Buffett's Berkshire Hathaway announced it and 3G Capital would acquire HJ Heinz Company in a transaction worth a whopping $28 billion."                                                                                              
+[8] "REUTERS/Jason Redmond Members of a medical marijuana delivery service promote their business at the High Times U.S. Cannabis Cup in Seattle, Washington September 8, 2013."                                                                                  
+> 
+> # GDP Query
+> questionAnswer("What affects GDP?")
+
+Query Type: gdp 
+Query Keywords: GDP 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "Personal consumption grew by 3.0%, adding 2 percentage points of growth to GDP."                                                                                                                                                 
+ [2] "Meanwhile exports fell 7.6% taking a full percentage point of growth from GDP."                                                                                                                                                  
+ [3] "Here's a breakdown of the components of GDP: BEA Here's how much the various components of GDP added to growth."                                                                                                                 
+ [4] "The biggest factors weighing on growth were nonfarm private inventories, which subtracted 1.70 percentage points from GDP growth, and federal defense spending, which subtracted 1.28 percentage points."                        
+ [5] "Each component of GDP varies widely in how much it contributes to growth."                                                                                                                                                       
+ [6] "Arenamontanus / FlickrThe European Union now expects GDP growth in the euro-area to fall 0.3 percent in 2013."                                                                                                                   
+ [7] "YouTubeQ4 GDP unexpectedly fell 0.1 percent."                                                                                                                                                                                    
+ [8] "GDP rose 0.1 percent, missing economists' predictions of a bigger 0.5 percent gain."                                                                                                                                             
+ [9] "U.S. GDP grew at a measly 0.1% rate in Q1."                                                                                                                                                                                      
+[10] "The biggest positive drivers were consumption of durable goods, which contributed 1.01 percentage points to GDP growth, and nonresidential fixed investment in equipment and software, which contributed 0.79 percentage points."
+> 
+> # 3 sample follow-up queries
+> questionAnswer("What percentage is associated with personal consumption?")
+
+Query Type: percentage 
+Query Keywords: percentage personal consumption 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "Personal consumption grew by 3.0%, adding 2 percentage points of growth to GDP."                                                                                
+ [2] "This was largely driven by personal consumption growth, which was revised up to 2.0% from 1.4%."                                                                
+ [3] "The personal saving rate — personal saving as a percentage of disposable personal income —climbed to 3.2% from 3.0% in April."                                  
+ [4] "Core personal consumption expenditures gained 1.5% in June, a tick ahead of estimates for 1.4%, and 0.1% month-over-month, down from the 0.2% rate in June."    
+ [5] "Expectations were for personal spending to rise by 0.1 and for personal income to rise by 0.3%."                                                                
+ [6] "Personal consumption growth came in at 2.1 percent, below both the advance estimate (2.2 percent) and expectations (2.3 percent)."                              
+ [7] "Core personal consumption expenditure prices came in as expected, unchanged at 0.1% growth month-over-month, and up 1.1% year-over-year versus 1.2% last month."
+ [8] "Expectations were for personal income to rise 0.3% and personal spending to rise 0.4% month-over-month."                                                        
+ [9] "Last month, personal spending rose by 0.5% and personal income rose by 0.3%."                                                                                   
+[10] "Last month, personal spending unexpectedly declined 0.1%."                                                                                                      
+> questionAnswer("What percentage is associated with exports?")
+
+Query Type: percentage 
+Query Keywords: percentage exports 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "Meanwhile exports fell 7.6% taking a full percentage point of growth from GDP."                                                                                                                                                                          
+ [2] "Export growth of China and Taiwan was only 4.9% and 4.4% yoy in 2Q14 respectively, so a boost of 1 to 2 percentage points to headline export growth is no small matter, especially for the currency market which closely tracks export growth numbers.\""
+ [3] "Export to the US fell 0.8 percent."                                                                                                                                                                                                                      
+ [4] "Personal consumption grew by 3.0%, adding 2 percentage points of growth to GDP."                                                                                                                                                                         
+ [5] "Exports to the EU fell 11.1 percent."                                                                                                                                                                                                                    
+ [6] "The employment sub-index however surged to 55.8, from 52.5, up 3.3 percentage points."                                                                                                                                                                   
+ [7] "Exports to China fell 15.8 percent."                                                                                                                                                                                                                     
+ [8] "Exports fell by 5.8 percent year-over-year versus the estimate of -4.2 percent."                                                                                                                                                                         
+ [9] "iPhone 6 sales are also expected to boost Taiwan's export growth 2% per month from August through October, and 1% from November through January."                                                                                                        
+[10] "The first shows that of the top 20 export markets for the U.S. eleven are developing nations \"but only two—Brazil (ranked 7th) and India (18th)—are of any significance when it comes to the current problems in the emerging markets.\""               
+> questionAnswer("What percentage is associated with federal defense spending?")
+
+Query Type: percentage 
+Query Keywords: percentage federal defense spending 
+Retrieving Documents
+Scoring Documents with SMART TF-IDF
+Retrieving Sentences
+Pruning Sentences by Type
+Scoring Sentences
+The 10 best scoring answers (in descending order) are:
+
+ [1] "Compensation of nondefense employees and civilian defense employees makes up about one-fifth of real federal spending and about 1.5% of GDP."                                                            
+ [2] "Federal spending on nondefense items was actually up 1.4 percent."                                                                                                                                       
+ [3] "The biggest factors weighing on growth were nonfarm private inventories, which subtracted 1.70 percentage points from GDP growth, and federal defense spending, which subtracted 1.28 percentage points."
+ [4] "Federal spending fell 15.0 percent, led by a 22.2 percent drop in defense spending."                                                                                                                     
+ [5] "State and local spending fell 0.7 percent."                                                                                                                                                              
+ [6] "National defense decreased 0.7 percent, compared with a decrease of 0.6 percent."                                                                                                                        
+ [7] "Government spending was the largest driver of the economic contraction in the fourth quarter, subtracting 1.33 percentage points from Q4 GDP growth and falling 6.6 percent."                            
+ [8] "The investment surge added 1.18 percentage points to Q4 GDP growth."                                                                                                                                     
+ [9] "Net trade subtracted 0.81 percentage points from Q4 GDP growth."                                                                                                                                         
+[10] "National defense decreased 22.2 percent, in contrast to an increase of 12.9 percent." 
